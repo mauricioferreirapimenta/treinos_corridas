@@ -114,7 +114,7 @@ if os.path.exists(FILE_PATH):
     except Exception as e:
         st.sidebar.error(str(e))
 else:
-    up = st.sidebar.file_uploader("Carregar Treinos Corrida.xlsx", type=["xlsx"])
+    up = st.sidebar.file_uploader("Carregar Treinos Corrida.xlsx", type=["xlsx'])
     if up:
         try:
             st.session_state.df = load_planilha(up)
@@ -229,13 +229,15 @@ with tab4:
         with tmes:
             g = aux.groupby("mes_key", as_index=False).agg(dist_km=("Distância (km)","sum"), tempo=("tempo_td","sum")).sort_values("mes_key")
             g["tempo"] = g["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
-            st.dataframe(g.rename(columns={"mes_key":"Mês (AAAA-MM)","dist_km":"Distância (km)","tempo":"Tempo"}), use_container_width=True)
-            st.bar_chart(g.set_index("Mês (AAAA-MM)")["Distância (km)"])
+            g_disp = g.rename(columns={"mes_key":"Mês (AAAA-MM)","dist_km":"Distância (km)","tempo":"Tempo"})
+            st.dataframe(g_disp, use_container_width=True)
+            st.bar_chart(g_disp.set_index("Mês (AAAA-MM)")["Distância (km)"])
         with tsem:
             g = aux.groupby("semana_key", as_index=False).agg(dist_km=("Distância (km)","sum"), tempo=("tempo_td","sum")).sort_values("semana_key")
             g["tempo"] = g["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
-            st.dataframe(g.rename(columns={"semana_key":"Semana","dist_km":"Distância (km)","tempo":"Tempo"}), use_container_width=True)
-            st.bar_chart(g.set_index("Semana")["Distância (km)"])
+            g_disp = g.rename(columns={"semana_key":"Semana","dist_km":"Distância (km)","tempo":"Tempo"})
+            st.dataframe(g_disp, use_container_width=True)
+            st.bar_chart(g_disp.set_index("Semana")["Distância (km)"])
         with ttot:
             st.write(f"**Total de treinos:** {len(df)}")
             st.write(f"**Primeiro treino:** {df['Data'].min().date() if len(df)>0 else '-'}")
