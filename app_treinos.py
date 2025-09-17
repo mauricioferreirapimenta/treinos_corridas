@@ -2,309 +2,179 @@
 import io
 import pandas as pd
 import streamlit as st
+from datetime import timedelta, time
 
-st.set_page_config(page_title="Treinos de Corrida", layout="wide")
+st.set_page_config(page_title="Treinos Corrida (Planilha oficial)", layout="wide")
 
-# -----------------------------
-# Helpers
-# -----------------------------
+COLS = ["Mês","Data","Dia da Semana","Distância","Tempo","Pace"]
+MESES_PT = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"]
+DIAS_PT = ["Segunda","Terça","Quarta","Quinta","Sexta","Sábado","Domingo"]
 
-WEEKDAY_PT = {
-    0: "Segunda",
-    1: "Terça",
-    2: "Quarta",
-    3: "Quinta",
-    4: "Sexta",
-    5: "Sábado",
-    6: "Domingo",
-}
+def mes_nome(dt): return MESES_PT[int(dt.month)-1].capitalize()
+def dia_semana_nome(dt): return DIAS_PT[int(dt.weekday())]
 
-def to_timedelta_safe(x):
-    if pd.isna(x) or x == "":
-        return pd.to_timedelta(0, unit="s")
+def to_timedelta(val):
+    if pd.isna(val) or val == "": return pd.to_timedelta(0, unit="s")
+    if isinstance(val, time): return pd.to_timedelta(f"{val.hour}:{val.minute}:{val.second}")
+    try: return pd.to_timedelta(val)
+    except Exception: return pd.to_timedelta(str(val), errors="coerce") or pd.to_timedelta(0, unit="s")
+
+def pace_str(tempo_td, dist):
+    dist = float(dist or 0)
+    if dist <= 0: return ""
+    secs = int(tempo_td.total_seconds()/dist)
+    return f"{secs//60:02d}:{secs%60:02d}"
+
+def load_planilha(f):
+    df = pd.read_excel(f, sheet_name="treinos")
+    miss = [c for c in COLS if c not in df.columns]
+    if miss: raise ValueError(f"Faltam colunas na aba 'treinos': {miss}")
+    if not pd.api.types.is_datetime64_any_dtype(df["Data"]):
+        df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
+    # Normalizar Tempo e Pace
+    df["Tempo"] = df["Tempo"].apply(lambda x: to_timedelta(x)).apply(lambda t: f"{int(t.total_seconds()//3600):02d}:{int((t.total_seconds()%3600)//60):02d}:{int(t.total_seconds()%60):02d}")
+    df["Pace"] = df["Pace"].apply(lambda x: to_timedelta(x)).apply(lambda t: "" if t.total_seconds()==0 else f"{int((t.total_seconds()//60)%60):02d}:{int(t.total_seconds()%60):02d}")
+    df["Distância"] = pd.to_numeric(df["Distância"], errors="coerce")
+    # Recalcular campos textuais a partir da Data
+    mask = df["Data"].notna()
+    df.loc[mask, "Mês"] = df.loc[mask, "Data"].apply(mes_nome)
+    df.loc[mask, "Dia da Semana"] = df.loc[mask, "Data"].apply(dia_semana_nome)
+    return df[COLS].sort_values("Data").reset_index(drop=True)
+
+def save_excel_bytes(df):
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="xlsxwriter") as w:
+        df.to_excel(w, sheet_name="treinos", index=False)
+        # resumos
+        aux = df.copy()
+        aux["tempo_td"] = aux["Tempo"].apply(lambda x: to_timedelta(x))
+        aux["ano_semana"] = aux["Data"].dt.year.astype(str) + "-W" + aux["Data"].dt.isocalendar().week.astype(str).str.zfill(2)
+        aux["mes_key"] = aux["Data"].dt.to_period("M").astype(str)
+        rm = aux.groupby("mes_key", as_index=False).agg(dist_km=("Distância","sum"), tempo=("tempo_td","sum"))
+        rs = aux.groupby("ano_semana", as_index=False).agg(dist_km=("Distância","sum"), tempo=("tempo_td","sum"))
+        for df2, name in [(rm,"resumo_mes"),(rs,"resumo_semana")]:
+            df2["tempo"] = df2["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
+            df2.to_excel(w, sheet_name=name, index=False)
+    return out.getvalue()
+
+if "df" not in st.session_state: st.session_state.df = pd.DataFrame(columns=COLS)
+
+st.sidebar.header("📂 Planilha oficial")
+up = st.sidebar.file_uploader("Carregar Treinos Corrida.xlsx", type=["xlsx"])
+if up:
     try:
-        return pd.to_timedelta(x)
-    except Exception:
-        try:
-            return pd.to_timedelta(str(x))
-        except Exception:
-            return pd.to_timedelta(0, unit="s")
-
-def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    rename_map = {
-        "data": "data",
-        "Data": "data",
-        "mes": "mes",
-        "Mês": "mes",
-        "dia_semana": "dia_semana",
-        "Dia da Semana": "dia_semana",
-        "dist_km": "dist_km",
-        "Distância": "dist_km",
-        "tempo_hms": "tempo_hms",
-        "Tempo": "tempo_hms",
-        "ritmo_min_km": "ritmo_min_km",
-        "Pace": "ritmo_min_km",
-        "tipo": "tipo",
-        "observacoes": "observacoes",
-        "Observacoes": "observacoes",
-        "semana_iso": "semana_iso",
-        "ano": "ano",
-        "ano_semana": "ano_semana",
-    }
-    df = df.rename(columns=rename_map)
-
-    for col in ["data","dist_km","tempo_hms"]:
-        if col not in df.columns:
-            df[col] = None
-
-    if not pd.api.types.is_datetime64_any_dtype(df["data"]):
-        df["data"] = pd.to_datetime(df["data"], errors="coerce")
-
-    df["mes"] = df["data"].dt.to_period("M").astype(str)
-    df["semana_iso"] = df["data"].dt.isocalendar().week.astype("Int64")
-    df["ano"] = df["data"].dt.year.astype("Int64")
-    df["ano_semana"] = df["ano"].astype(str) + "-W" + df["semana_iso"].astype(str).str.zfill(2)
-    df["dia_semana"] = df["data"].dt.weekday.map(WEEKDAY_PT)
-
-    df["dist_km"] = pd.to_numeric(df["dist_km"], errors="coerce")
-
-    td = df["tempo_hms"].apply(to_timedelta_safe)
-    df["tempo_hms"] = td.dt.components.apply(
-        lambda r: f"{int(r['hours'] + 24*(r['days'])):02d}:{int(r['minutes']):02d}:{int(r['seconds']):02d}", axis=1
-    )
-
-    secs = td.dt.total_seconds()
-    with pd.option_context("mode.use_inf_as_na", True):
-        pace_secs = (secs / df["dist_km"]).where(df["dist_km"] > 0)
-    pace_td = pd.to_timedelta(pace_secs, unit="s")
-    df["ritmo_min_km"] = pace_td.dt.components.apply(
-        lambda r: f"{int(r['minutes'] + 60*(r['hours'] + 24*(r['days']))):02d}:{int(r['seconds']):02d}" if pd.notna(r["seconds"]) else "",
-        axis=1
-    )
-
-    for col in ["tipo","observacoes"]:
-        if col not in df.columns:
-            df[col] = ""
-
-    cols = ["data","mes","dia_semana","dist_km","tempo_hms","ritmo_min_km","tipo","observacoes","semana_iso","ano","ano_semana"]
-    return df[cols].sort_values("data")
-
-@st.cache_data
-def df_to_excel_bytes(df: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False, sheet_name="treinos")
-        g_mes = df.groupby("mes", as_index=False).agg(
-            dist_km=("dist_km","sum"),
-            tempo=("tempo_hms", lambda s: pd.to_timedelta(s).sum())
-        )
-        g_sem = df.groupby("ano_semana", as_index=False).agg(
-            dist_km=("dist_km","sum"),
-            tempo=("tempo_hms", lambda s: pd.to_timedelta(s).sum())
-        )
-        g_mes["tempo"] = g_mes["tempo"].astype(str)
-        g_sem["tempo"] = g_sem["tempo"].astype(str)
-        g_mes.to_excel(writer, index=False, sheet_name="resumo_mes")
-        g_sem.to_excel(writer, index=False, sheet_name="resumo_semana")
-    return output.getvalue()
-
-def init_state():
-    if "df" not in st.session_state:
-        st.session_state.df = pd.DataFrame(columns=[
-            "data","mes","dia_semana","dist_km","tempo_hms","ritmo_min_km","tipo","observacoes","semana_iso","ano","ano_semana"
-        ])
-
-def add_row(form_vals):
-    df = st.session_state.df.copy()
-    new = pd.DataFrame([form_vals])
-    df = pd.concat([df, new], ignore_index=True)
-    st.session_state.df = normalize_df(df)
-
-def update_row(idx, form_vals):
-    df = st.session_state.df.copy()
-    for k,v in form_vals.items():
-        df.at[idx, k] = v
-    st.session_state.df = normalize_df(df)
-
-def time_to_text(hours:int, minutes:int, seconds:int) -> str:
-    h = int(hours or 0); m = int(minutes or 0); s = int(seconds or 0)
-    total = h*3600 + m*60 + s
-    td = pd.to_timedelta(total, unit="s")
-    comps = td.components.iloc[0]
-    hh = int(comps["hours"] + 24*(comps["days"]))
-    mm = int(comps["minutes"])
-    ss = int(comps["seconds"])
-    return f"{hh:02d}:{mm:02d}:{ss:02d}"
-
-# Sidebar
-st.sidebar.header("📂 Ficheiro")
-uploaded = st.sidebar.file_uploader("Carregar CSV ou XLSX", type=["csv","xlsx"])
-
-init_state()
-
-if uploaded:
-    if uploaded.name.lower().endswith(".csv"):
-        df_file = pd.read_csv(uploaded)
-    else:
-        try:
-            df_file = pd.read_excel(uploaded, sheet_name="treinos")
-        except Exception:
-            df_file = pd.read_excel(uploaded)
-    st.session_state.df = normalize_df(df_file)
-
-if st.session_state.df.empty:
-    st.sidebar.info("Sem dados. Use a aba **Adicionar** para criar seus treinos, ou faça upload.")
-else:
-    st.sidebar.success(f"{len(st.session_state.df)} registos carregados.")
+        st.session_state.df = load_planilha(up)
+        st.sidebar.success("Planilha carregada.")
+    except Exception as e:
+        st.sidebar.error(str(e))
 
 if not st.session_state.df.empty:
-    st.sidebar.download_button(
-        "⬇️ Descarregar CSV",
-        data=st.session_state.df.to_csv(index=False).encode("utf-8"),
-        file_name="treinos.csv",
-        mime="text/csv"
-    )
-    st.sidebar.download_button(
-        "⬇️ Descarregar Excel",
-        data=df_to_excel_bytes(st.session_state.df),
-        file_name="treinos.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.sidebar.download_button("⬇️ Descarregar Excel atualizado", data=save_excel_bytes(st.session_state.df),
+                               file_name="Treinos Corrida - atualizado.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.title("🏃‍♂️ Planilha de Treinos")
+st.title("🏃 Treinos (Planilha oficial)")
+tab1, tab2, tab3, tab4 = st.tabs(["Adicionar","Alterar","Listagem Completa","Resumos"])
 
-tab_add, tab_edit, tab_list, tab_sum = st.tabs(["Adicionar", "Alterar", "Listagem Completa", "Resumos"])
-
-with tab_add:
-    st.subheader("Adicionar treino")
-    with st.form("form_add", clear_on_submit=True):
-        c1, c2 = st.columns(2)
+with tab1:
+    st.subheader("Adicionar")
+    with st.form("add", clear_on_submit=True):
+        c1,c2 = st.columns(2)
         data = c1.date_input("Data")
         dist = c2.number_input("Distância (km)", min_value=0.0, step=0.01, format="%.2f")
-        t1, t2, t3 = st.columns(3)
-        h = t1.number_input("Horas", min_value=0, step=1, value=0)
-        m = t2.number_input("Minutos", min_value=0, max_value=59, step=1, value=0)
-        s = t3.number_input("Segundos", min_value=0, max_value=59, step=1, value=0)
-        c3, c4 = st.columns(2)
-        tipo = c3.text_input("Tipo (opcional)", value="")
-        obs = c4.text_input("Observações (opcional)", value="")
-        submitted = st.form_submit_button("➕ Adicionar")
-        if submitted:
-            tempo = time_to_text(h, m, s)
-            vals = {
-                "data": pd.to_datetime(data),
-                "dist_km": dist,
-                "tempo_hms": tempo,
-                "tipo": tipo,
-                "observacoes": obs,
+        t1,t2,t3 = st.columns(3)
+        hh = t1.number_input("Horas", min_value=0, step=1, value=0)
+        mm = t2.number_input("Minutos", min_value=0, max_value=59, step=1, value=0)
+        ss = t3.number_input("Segundos", min_value=0, max_value=59, step=1, value=0)
+        ok = st.form_submit_button("➕ Adicionar")
+        if ok:
+            tempo = f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d}"
+            tempo_td = to_timedelta(tempo)
+            new = {
+                "Mês": mes_nome(pd.to_datetime(data)),
+                "Data": pd.to_datetime(data),
+                "Dia da Semana": dia_semana_nome(pd.to_datetime(data)),
+                "Distância": dist,
+                "Tempo": tempo,
+                "Pace": pace_str(tempo_td, dist),
             }
-            add_row(vals)
-            st.success("Treino adicionado!")
+            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new])], ignore_index=True)
+            st.success("Treino adicionado.")
 
-with tab_edit:
-    st.subheader("Alterar treino")
+with tab2:
+    st.subheader("Alterar")
     df = st.session_state.df
     if df.empty:
-        st.info("Nenhum treino para editar.")
+        st.info("Carregue a planilha na barra lateral.")
     else:
-        df_disp = df.copy()
-        df_disp["linha"] = df_disp.index
-        df_disp["label"] = df_disp["data"].dt.strftime("%Y-%m-%d") + " | " + df_disp["dist_km"].fillna(0).map(lambda x: f"{x:.2f} km")
-        idx = st.selectbox("Selecione o registo", options=df_disp["linha"], format_func=lambda i: df_disp.loc[i, "label"])
+        dfv = df.copy()
+        dfv["idx"] = dfv.index
+        dfv["rotulo"] = dfv["Data"].dt.strftime("%Y-%m-%d") + " | " + dfv["Distância"].fillna(0).map(lambda x: f"{x:.2f} km")
+        idx = st.selectbox("Selecione", options=dfv["idx"], format_func=lambda i: dfv.loc[i,"rotulo"])
         row = df.loc[idx]
-
-        c1, c2 = st.columns(2)
-        data = c1.date_input("Data", value=row["data"].date() if pd.notna(row["data"]) else pd.Timestamp("today").date())
-        dist = c2.number_input("Distância (km)", min_value=0.0, step=0.01, value=float(row["dist_km"] or 0))
-        t1, t2, t3 = st.columns(3)
-        td0 = to_timedelta_safe(row["tempo_hms"])
-        comps = td0.components
-        h0 = int(comps["hours"] + 24*(comps["days"]))
-        m0 = int(comps["minutes"])
-        s0 = int(comps["seconds"])
-        h = t1.number_input("Horas", min_value=0, step=1, value=h0)
-        m = t2.number_input("Minutos", min_value=0, max_value=59, step=1, value=m0)
-        s = t3.number_input("Segundos", min_value=0, max_value=59, step=1, value=s0)
-        c3, c4 = st.columns(2)
-        tipo = c3.text_input("Tipo (opcional)", value=row.get("tipo","") or "")
-        obs = c4.text_input("Observações (opcional)", value=row.get("observacoes","") or "")
-        colb1, colb2 = st.columns([1,1])
-        b_save = colb1.button("💾 Guardar alterações")
-        b_delete = colb2.button("🗑️ Apagar este registo")
-        if b_save:
-            tempo = time_to_text(h, m, s)
-            vals = {
-                "data": pd.to_datetime(data),
-                "dist_km": dist,
-                "tempo_hms": tempo,
-                "tipo": tipo,
-                "observacoes": obs,
-            }
-            update_row(idx, vals)
+        c1,c2 = st.columns(2)
+        data = c1.date_input("Data", value=row["Data"].date())
+        dist = c2.number_input("Distância (km)", min_value=0.0, step=0.01, value=float(row["Distância"] or 0))
+        t1,t2,t3 = st.columns(3)
+        td = to_timedelta(row["Tempo"])
+        hh0 = int(td.total_seconds()//3600); mm0 = int((td.total_seconds()%3600)//60); ss0 = int(td.total_seconds()%60)
+        hh = t1.number_input("Horas", min_value=0, step=1, value=hh0)
+        mm = t2.number_input("Minutos", min_value=0, max_value=59, step=1, value=mm0)
+        ss = t3.number_input("Segundos", min_value=0, max_value=59, step=1, value=ss0)
+        col1,col2 = st.columns(2)
+        if col1.button("💾 Guardar"):
+            tempo = f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d}"
+            st.session_state.df.at[idx,"Data"] = pd.to_datetime(data)
+            st.session_state.df.at[idx,"Mês"] = mes_nome(pd.to_datetime(data))
+            st.session_state.df.at[idx,"Dia da Semana"] = dia_semana_nome(pd.to_datetime(data))
+            st.session_state.df.at[idx,"Distância"] = dist
+            st.session_state.df.at[idx,"Tempo"] = tempo
+            st.session_state.df.at[idx,"Pace"] = pace_str(to_timedelta(tempo), dist)
+            st.session_state.df = st.session_state.df.sort_values("Data").reset_index(drop=True)
             st.success("Registo atualizado.")
-        if b_delete:
+        if col2.button("🗑️ Apagar"):
             st.session_state.df = df.drop(index=idx).reset_index(drop=True)
-            st.session_state.df = normalize_df(st.session_state.df)
-            st.warning("Registo apagado.")
+            st.success("Registo apagado.")
 
-with tab_list:
+with tab3:
     st.subheader("Listagem Completa")
     df = st.session_state.df
     if df.empty:
-        st.info("Sem dados.")
+        st.info("Carregue a planilha.")
     else:
-        cc1, cc2, cc3 = st.columns(3)
-        year_sel = cc1.multiselect("Filtrar Ano", options=sorted(df["ano"].dropna().unique().tolist()))
-        mes_sel = cc2.multiselect("Filtrar Mês (AAAA-MM)", options=sorted(df["mes"].dropna().unique().tolist()))
-        tipo_sel = cc3.multiselect("Filtrar Tipo", options=sorted([x for x in df["tipo"].dropna().unique().tolist() if x]))
-        q = df.copy()
-        if year_sel:
-            q = q[q["ano"].isin(year_sel)]
-        if mes_sel:
-            q = q[q["mes"].isin(mes_sel)]
-        if tipo_sel:
-            q = q[q["tipo"].isin(tipo_sel)]
-        st.dataframe(q.sort_values("data", ascending=False), use_container_width=True)
+        st.dataframe(df.sort_values("Data", ascending=False), use_container_width=True)
 
-with tab_sum:
+with tab4:
     st.subheader("Resumos")
     df = st.session_state.df
     if df.empty:
-        st.info("Sem dados.")
+        st.info("Carregue a planilha.")
     else:
-        t1, t2, t3 = st.columns(3)
-        total_km = df["dist_km"].sum()
-        total_t = pd.to_timedelta(df["tempo_hms"]).sum()
-        ritmo_medio = pd.to_timedelta(df["tempo_hms"]).sum() / df["dist_km"].sum() if total_km > 0 else pd.to_timedelta(0, unit="s")
-        t1.metric("Total (km)", f"{total_km:.2f}")
-        t2.metric("Total (tempo)", str(total_t))
-        t3.metric("Ritmo médio", str(ritmo_medio))
+        aux = df.copy()
+        aux["tempo_td"] = aux["Tempo"].apply(to_timedelta)
+        aux["ano_semana"] = aux["Data"].dt.year.astype(str) + "-W" + aux["Data"].dt.isocalendar().week.astype(str).str.zfill(2)
+        aux["mes_key"] = aux["Data"].dt.to_period("M").astype(str)
 
-        tab_m, tab_w, tab_tot = st.tabs(["Por mês/ano", "Por semana", "Total"])
+        total_km = aux["Distância"].sum()
+        total_t = aux["tempo_td"].sum()
+        c1,c2,c3 = st.columns(3)
+        c1.metric("Total (km)", f"{total_km:.2f}")
+        c2.metric("Tempo total", str(total_t))
+        ritmo_sec = int(total_t.total_seconds()/total_km) if total_km>0 else 0
+        c3.metric("Ritmo médio", f"{ritmo_sec//60:02d}:{ritmo_sec%60:02d}" if total_km>0 else "00:00")
 
-        with tab_m:
-            g_mes = df.groupby("mes", as_index=False).agg(
-                dist_km=("dist_km","sum"),
-                tempo=("tempo_hms", lambda s: pd.to_timedelta(s).sum())
-            ).sort_values("mes")
-            g_mes["tempo"] = g_mes["tempo"].astype(str)
-            st.dataframe(g_mes, use_container_width=True)
-            st.bar_chart(g_mes.set_index("mes")["dist_km"])
-
-        with tab_w:
-            g_sem = df.groupby("ano_semana", as_index=False).agg(
-                dist_km=("dist_km","sum"),
-                tempo=("tempo_hms", lambda s: pd.to_timedelta(s).sum())
-            ).sort_values("ano_semana")
-            g_sem["tempo"] = g_sem["tempo"].astype(str)
-            st.dataframe(g_sem, use_container_width=True)
-            st.bar_chart(g_sem.set_index("ano_semana")["dist_km"])
-
-        with tab_tot:
-            st.write("**Totais gerais**")
-            c1, c2 = st.columns(2)
-            c1.write(f"**Total de treinos:** {len(df)}")
-            c1.write(f"**Total de km:** {total_km:.2f}")
-            c1.write(f"**Tempo total:** {total_t}")
-            c2.write(f"**Primeiro treino:** {df['data'].min().date() if len(df)>0 else '-'}")
-            c2.write(f"**Último treino:** {df['data'].max().date() if len(df)>0 else '-'}")
+        tmes, tsem, ttot = st.tabs(["Por mês/ano", "Por semana", "Total"])
+        with tmes:
+            g = aux.groupby("mes_key", as_index=False).agg(dist_km=("Distância","sum"), tempo=("tempo_td","sum")).sort_values("mes_key")
+            g["tempo"] = g["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
+            st.dataframe(g.rename(columns={"mes_key":"Mês (AAAA-MM)","dist_km":"Distância","tempo":"Tempo"}), use_container_width=True)
+            st.bar_chart(g.set_index("Mês (AAAA-MM)")["Distância"] if "Mês (AAAA-MM)" in g.columns else g.set_index("mes_key")["dist_km"])
+        with tsem:
+            g = aux.groupby("ano_semana", as_index=False).agg(dist_km=("Distância","sum"), tempo=("tempo_td","sum")).sort_values("ano_semana")
+            g["tempo"] = g["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
+            st.dataframe(g.rename(columns={"ano_semana":"Semana","dist_km":"Distância","tempo":"Tempo"}), use_container_width=True)
+            st.bar_chart(g.set_index("Semana")["Distância"])
+        with ttot:
+            st.write(f"**Total de treinos:** {len(df)}")
+            st.write(f"**Primeiro treino:** {df['Data'].min().date() if len(df)>0 else '-'}")
+            st.write(f"**Último treino:** {df['Data'].max().date() if len(df)>0 else '-'}")
