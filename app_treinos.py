@@ -1,8 +1,20 @@
-
 import io
 import pandas as pd
 import streamlit as st
 from datetime import timedelta, time
+
+import os
+
+FILE_PATH = "Treinos Corrida.xlsx"
+
+if os.path.exists(FILE_PATH):
+    st.session_state.df = load_planilha(FILE_PATH)
+    st.sidebar.success("📄 Planilha carregada automaticamente.")
+else:
+    up = st.sidebar.file_uploader("Carregar planilha (caso não exista o arquivo local)", type=["xlsx"])
+    if up:
+        st.session_state.df = load_planilha(up)
+        st.sidebar.success("Planilha carregada via upload.")
 
 st.set_page_config(page_title="Treinos Corrida (Planilha oficial)", layout="wide")
 
