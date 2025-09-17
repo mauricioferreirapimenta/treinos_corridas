@@ -1,90 +1,128 @@
 import io
+import os
+from datetime import time
 import pandas as pd
 import streamlit as st
-from datetime import timedelta, time
 
-import os
-
-FILE_PATH = "Treinos Corrida.xlsx"
-
-if os.path.exists(FILE_PATH):
-    st.session_state.df = load_planilha(FILE_PATH)
-    st.sidebar.success("📄 Planilha carregada automaticamente.")
-else:
-    up = st.sidebar.file_uploader("Carregar planilha (caso não exista o arquivo local)", type=["xlsx"])
-    if up:
-        st.session_state.df = load_planilha(up)
-        st.sidebar.success("Planilha carregada via upload.")
-
+# 1) Configuração da página (tem que vir cedo)
 st.set_page_config(page_title="Treinos Corrida (Planilha oficial)", layout="wide")
 
-COLS = ["Mês","Data","Dia da Semana","Distância","Tempo","Pace"]
+# 2) Constantes
+FILE_PATH = "Treinos Corrida.xlsx"
+COLS = ["Mês", "Data", "Dia da Semana", "Distância", "Tempo", "Pace"]
 MESES_PT = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"]
 DIAS_PT = ["Segunda","Terça","Quarta","Quinta","Sexta","Sábado","Domingo"]
 
-def mes_nome(dt): return MESES_PT[int(dt.month)-1].capitalize()
-def dia_semana_nome(dt): return DIAS_PT[int(dt.weekday())]
+# 3) Helpers ------------------------------------------------------------
+def mes_nome(dt): 
+    return MESES_PT[int(dt.month)-1].capitalize()
+
+def dia_semana_nome(dt): 
+    return DIAS_PT[int(dt.weekday())]
 
 def to_timedelta(val):
-    if pd.isna(val) or val == "": return pd.to_timedelta(0, unit="s")
-    if isinstance(val, time): return pd.to_timedelta(f"{val.hour}:{val.minute}:{val.second}")
-    try: return pd.to_timedelta(val)
-    except Exception: return pd.to_timedelta(str(val), errors="coerce") or pd.to_timedelta(0, unit="s")
+    if pd.isna(val) or val == "":
+        return pd.to_timedelta(0, unit="s")
+    if isinstance(val, time):
+        return pd.to_timedelta(f"{val.hour}:{val.minute}:{val.second}")
+    try:
+        return pd.to_timedelta(val)
+    except Exception:
+        try:
+            return pd.to_timedelta(str(val))
+        except Exception:
+            return pd.to_timedelta(0, unit="s")
 
 def pace_str(tempo_td, dist):
     dist = float(dist or 0)
-    if dist <= 0: return ""
-    secs = int(tempo_td.total_seconds()/dist)
+    if dist <= 0:
+        return ""
+    secs = int(tempo_td.total_seconds() / dist)
     return f"{secs//60:02d}:{secs%60:02d}"
 
 def load_planilha(f):
     df = pd.read_excel(f, sheet_name="treinos")
     miss = [c for c in COLS if c not in df.columns]
-    if miss: raise ValueError(f"Faltam colunas na aba 'treinos': {miss}")
+    if miss:
+        raise ValueError(f"Faltam colunas na aba 'treinos': {miss}")
     if not pd.api.types.is_datetime64_any_dtype(df["Data"]):
         df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
-    # Normalizar Tempo e Pace
-    df["Tempo"] = df["Tempo"].apply(lambda x: to_timedelta(x)).apply(lambda t: f"{int(t.total_seconds()//3600):02d}:{int((t.total_seconds()%3600)//60):02d}:{int(t.total_seconds()%60):02d}")
-    df["Pace"] = df["Pace"].apply(lambda x: to_timedelta(x)).apply(lambda t: "" if t.total_seconds()==0 else f"{int((t.total_seconds()//60)%60):02d}:{int(t.total_seconds()%60):02d}")
+
+    # Normalizar Tempo e Pace para strings HH:MM:SS
+    df["Tempo"] = (
+        df["Tempo"]
+        .apply(to_timedelta)
+        .apply(lambda t: f"{int(t.total_seconds()//3600):02d}:{int((t.total_seconds()%3600)//60):02d}:{int(t.total_seconds()%60):02d}")
+    )
+    df["Pace"] = (
+        df["Pace"]
+        .apply(to_timedelta)
+        .apply(lambda t: "" if t.total_seconds()==0 else f"{int((t.total_seconds()//60)%60):02d}:{int(t.total_seconds()%60):02d}")
+    )
     df["Distância"] = pd.to_numeric(df["Distância"], errors="coerce")
+
     # Recalcular campos textuais a partir da Data
     mask = df["Data"].notna()
     df.loc[mask, "Mês"] = df.loc[mask, "Data"].apply(mes_nome)
     df.loc[mask, "Dia da Semana"] = df.loc[mask, "Data"].apply(dia_semana_nome)
+
     return df[COLS].sort_values("Data").reset_index(drop=True)
 
 def save_excel_bytes(df):
     out = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(w, sheet_name="treinos", index=False)
-        # resumos
+    # usar openpyxl para não depender do xlsxwriter
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="treinos", index=False)
+
         aux = df.copy()
-        aux["tempo_td"] = aux["Tempo"].apply(lambda x: to_timedelta(x))
+        aux["tempo_td"] = aux["Tempo"].apply(to_timedelta)
         aux["ano_semana"] = aux["Data"].dt.year.astype(str) + "-W" + aux["Data"].dt.isocalendar().week.astype(str).str.zfill(2)
         aux["mes_key"] = aux["Data"].dt.to_period("M").astype(str)
+
         rm = aux.groupby("mes_key", as_index=False).agg(dist_km=("Distância","sum"), tempo=("tempo_td","sum"))
         rs = aux.groupby("ano_semana", as_index=False).agg(dist_km=("Distância","sum"), tempo=("tempo_td","sum"))
-        for df2, name in [(rm,"resumo_mes"),(rs,"resumo_semana")]:
-            df2["tempo"] = df2["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
-            df2.to_excel(w, sheet_name=name, index=False)
+
+        # renderizar tempo como HH:MM:SS
+        for df2, name in [(rm, "resumo_mes"), (rs, "resumo_semana")]:
+            df2["tempo"] = (
+                df2["tempo"].astype("timedelta64[s]").astype(int)
+                .apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
+            )
+            df2.to_excel(writer, sheet_name=name, index=False)
     return out.getvalue()
 
-if "df" not in st.session_state: st.session_state.df = pd.DataFrame(columns=COLS)
+# 4) Estado -------------------------------------------------------------
+if "df" not in st.session_state:
+    st.session_state.df = pd.DataFrame(columns=COLS)
 
+# 5) Carregar ficheiro automaticamente (ou upload de fallback) ----------
 st.sidebar.header("📂 Planilha oficial")
-up = st.sidebar.file_uploader("Carregar Treinos Corrida.xlsx", type=["xlsx"])
-if up:
+
+if os.path.exists(FILE_PATH):
     try:
-        st.session_state.df = load_planilha(up)
-        st.sidebar.success("Planilha carregada.")
+        st.session_state.df = load_planilha(FILE_PATH)
+        st.sidebar.success("📄 Planilha carregada automaticamente.")
     except Exception as e:
         st.sidebar.error(str(e))
+else:
+    up = st.sidebar.file_uploader("Carregar Treinos Corrida.xlsx", type=["xlsx"])
+    if up:
+        try:
+            st.session_state.df = load_planilha(up)
+            st.sidebar.success("Planilha carregada via upload.")
+        except Exception as e:
+            st.sidebar.error(str(e))
 
+# Botão de download
 if not st.session_state.df.empty:
-    st.sidebar.download_button("⬇️ Descarregar Excel atualizado", data=save_excel_bytes(st.session_state.df),
-                               file_name="Treinos Corrida - atualizado.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.sidebar.download_button(
+        "⬇️ Descarregar Excel atualizado",
+        data=save_excel_bytes(st.session_state.df),
+        file_name="Treinos Corrida - atualizado.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
+# 6) UI -----------------------------------------------------------------
 st.title("🏃 Treinos (Planilha oficial)")
 tab1, tab2, tab3, tab4 = st.tabs(["Adicionar","Alterar","Listagem Completa","Resumos"])
 
@@ -124,15 +162,19 @@ with tab2:
         dfv["rotulo"] = dfv["Data"].dt.strftime("%Y-%m-%d") + " | " + dfv["Distância"].fillna(0).map(lambda x: f"{x:.2f} km")
         idx = st.selectbox("Selecione", options=dfv["idx"], format_func=lambda i: dfv.loc[i,"rotulo"])
         row = df.loc[idx]
+
         c1,c2 = st.columns(2)
         data = c1.date_input("Data", value=row["Data"].date())
         dist = c2.number_input("Distância (km)", min_value=0.0, step=0.01, value=float(row["Distância"] or 0))
         t1,t2,t3 = st.columns(3)
         td = to_timedelta(row["Tempo"])
-        hh0 = int(td.total_seconds()//3600); mm0 = int((td.total_seconds()%3600)//60); ss0 = int(td.total_seconds()%60)
+        hh0 = int(td.total_seconds()//3600)
+        mm0 = int((td.total_seconds()%3600)//60)
+        ss0 = int(td.total_seconds()%60)
         hh = t1.number_input("Horas", min_value=0, step=1, value=hh0)
         mm = t2.number_input("Minutos", min_value=0, max_value=59, step=1, value=mm0)
         ss = t3.number_input("Segundos", min_value=0, max_value=59, step=1, value=ss0)
+
         col1,col2 = st.columns(2)
         if col1.button("💾 Guardar"):
             tempo = f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d}"
@@ -180,7 +222,7 @@ with tab4:
             g = aux.groupby("mes_key", as_index=False).agg(dist_km=("Distância","sum"), tempo=("tempo_td","sum")).sort_values("mes_key")
             g["tempo"] = g["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
             st.dataframe(g.rename(columns={"mes_key":"Mês (AAAA-MM)","dist_km":"Distância","tempo":"Tempo"}), use_container_width=True)
-            st.bar_chart(g.set_index("Mês (AAAA-MM)")["Distância"] if "Mês (AAAA-MM)" in g.columns else g.set_index("mes_key")["dist_km"])
+            st.bar_chart(g.set_index("Mês (AAAA-MM)")["Distância"])
         with tsem:
             g = aux.groupby("ano_semana", as_index=False).agg(dist_km=("Distância","sum"), tempo=("tempo_td","sum")).sort_values("ano_semana")
             g["tempo"] = g["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
@@ -190,3 +232,4 @@ with tab4:
             st.write(f"**Total de treinos:** {len(df)}")
             st.write(f"**Primeiro treino:** {df['Data'].min().date() if len(df)>0 else '-'}")
             st.write(f"**Último treino:** {df['Data'].max().date() if len(df)>0 else '-'}")
+
