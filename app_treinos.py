@@ -43,7 +43,7 @@ def load_planilha(f):
 
 def save_excel_bytes(df):
     out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="xlsxwriter") as w:
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(w, sheet_name="treinos", index=False)
         # resumos
         aux = df.copy()
