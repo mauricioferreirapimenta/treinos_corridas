@@ -243,20 +243,21 @@ else:  # 📊 Resumos
     st.header("📊 Resumos")
     st.caption("Selecione no menu abaixo o tipo de resumo que deseja visualizar.")
 
-  # 🔽 seletor (com opção em branco inicial)
-tipo = st.selectbox(
-    "Escolha o tipo de resumo",
-    ["", "Mês/ano", "Semana", "Total geral"],  # adiciona opção vazia
-    index=0,
-)
+    # 🔽 seletor (com opção em branco inicial)
+    tipo = st.selectbox(
+        "Escolha o tipo de resumo",
+        ["", "Mês/ano", "Semana", "Total geral"],  # adiciona opção vazia
+        index=0,
+    )
 
-if df.empty:
-    st.info("Carregue a planilha.")
-elif tipo == "":
-    st.info("Selecione um tipo de resumo acima ⬆️")
-else:
-    aux = df.copy()
-    aux["tempo_td"] = aux["Tempo"].apply
+    if df.empty:
+        st.info("Carregue a planilha.")
+    elif tipo == "":
+        st.info("Selecione um tipo de resumo acima ⬆️")
+    else:
+        aux = df.copy()
+        # >>> esta linha estava incompleta; precisa do to_timedelta <<<
+        aux["tempo_td"] = aux["Tempo"].apply(to_timedelta)
 
         if tipo == "Mês/ano":
             g = (
