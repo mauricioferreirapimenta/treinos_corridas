@@ -4,18 +4,20 @@ from datetime import time
 import pandas as pd
 import streamlit as st
 
-# ---------------- Config ----------------
-st.set_page_config(page_title="Treinos Corrida", layout="wide")
-
+# =========================
+# Config
+# =========================
+st.set_page_config(page_title="Controle de Corridas", layout="wide")
 FILE_PATH = "Treinos Corrida.xlsx"
 
-# Column names exactly as in the Excel file
+# Cabeçalhos exatamente como na planilha
 COLS = ["Mês/Ano", "Data", "Semana", "Dia da Semana", "Distância (km)", "Tempo", "Pace (min/km)"]
-
 MESES_PT = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"]
-DIAS_PT = ["Segunda","Terça","Quarta","Quinta","Sexta","Sábado","Domingo"]
+DIAS_PT   = ["Segunda","Terça","Quarta","Quinta","Sexta","Sábado","Domingo"]
 
-# ---------------- Helpers ----------------
+# =========================
+# Helpers
+# =========================
 def mes_ano_label(dt):
     m = MESES_PT[int(dt.month)-1].capitalize()
     return f"{m} {int(dt.year)}"
@@ -40,6 +42,10 @@ def to_timedelta(val):
         except Exception:
             return pd.to_timedelta(0, unit="s")
 
+def timedelta_to_hms(td):
+    secs = int(td.total_seconds())
+    return f"{secs//3600:02d}:{(secs%3600)//60:02d}:{secs%60:02d}"
+
 def pace_str(tempo_td, dist):
     dist = float(dist or 0)
     if dist <= 0:
@@ -48,31 +54,30 @@ def pace_str(tempo_td, dist):
     return f"{secs//60:02d}:{secs%60:02d}"
 
 def normalize_and_fill(df: pd.DataFrame) -> pd.DataFrame:
-    # Ensure all expected columns exist
+    # Garante todas as colunas
     for c in COLS:
         if c not in df.columns:
             df[c] = None
 
-    # Parse Data
+    # Data
     if not pd.api.types.is_datetime64_any_dtype(df["Data"]):
         df["Data"] = pd.to_datetime(df["Data"], errors="coerce")
 
-    # Distance numeric
+    # Distância
     df["Distância (km)"] = pd.to_numeric(df["Distância (km)"], errors="coerce")
 
-    # Normalize Tempo and Pace strings
+    # Tempo e Pace
     tempo_td = df["Tempo"].apply(to_timedelta)
-    df["Tempo"] = tempo_td.apply(lambda t: f"{int(t.total_seconds()//3600):02d}:{int((t.total_seconds()%3600)//60):02d}:{int(t.total_seconds()%60):02d}")
+    df["Tempo"] = tempo_td.apply(timedelta_to_hms)
     pace_td = df["Pace (min/km)"].apply(to_timedelta)
     df["Pace (min/km)"] = pace_td.apply(lambda t: "" if t.total_seconds()==0 else f"{int((t.total_seconds()//60)%60):02d}:{int(t.total_seconds()%60):02d}")
 
-    # Fill derived columns from Data
+    # Derivados da Data
     mask = df["Data"].notna()
-    df.loc[mask, "Mês/Ano"] = df.loc[mask, "Data"].apply(mes_ano_label)
+    df.loc[mask, "Mês/Ano"]       = df.loc[mask, "Data"].apply(mes_ano_label)
     df.loc[mask, "Dia da Semana"] = df.loc[mask, "Data"].apply(dia_semana_nome)
-    df.loc[mask, "Semana"] = df.loc[mask, "Data"].apply(semana_iso_label)
+    df.loc[mask, "Semana"]        = df.loc[mask, "Data"].apply(semana_iso_label)
 
-    # Order columns and sort
     return df[COLS].sort_values("Data").reset_index(drop=True)
 
 def load_planilha(f) -> pd.DataFrame:
@@ -87,28 +92,43 @@ def save_excel_bytes(df):
         aux = df.copy()
         aux["tempo_td"] = aux["Tempo"].apply(to_timedelta)
 
-        # Keys for summaries from Data, independent of the text columns
-        aux["mes_key"] = aux["Data"].dt.to_period("M").astype(str)
-        aux["semana_key"] = aux["Data"].dt.year.astype(str) + "-W" + aux["Data"].dt.isocalendar().week.astype(str).str.zfill(2)
+        # Resumo por Mês/Ano
+        rm = (
+            aux.groupby("Mês/Ano", as_index=False)
+               .agg(treinos=("Data","count"),
+                    distancia_km=("Distância (km)","sum"),
+                    tempo=("tempo_td","sum"))
+        )
+        rm["ritmo_medio"] = rm.apply(lambda r: pace_str(r["tempo"], r["distancia_km"]), axis=1)
+        rm["tempo"] = rm["tempo"].apply(timedelta_to_hms)
+        rm.to_excel(writer, sheet_name="resumo_mes", index=False)
 
-        rm = aux.groupby("mes_key", as_index=False).agg(dist_km=("Distância (km)","sum"), tempo=("tempo_td","sum"))
-        rs = aux.groupby("semana_key", as_index=False).agg(dist_km=("Distância (km)","sum"), tempo=("tempo_td","sum"))
-
-        for df2, name in [(rm, "resumo_mes"), (rs, "resumo_semana")]:
-            df2["tempo"] = df2["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
-            df2.to_excel(writer, sheet_name=name, index=False)
+        # Resumo por Semana
+        rs = (
+            aux.groupby("Semana", as_index=False)
+               .agg(treinos=("Data","count"),
+                    distancia_km=("Distância (km)","sum"),
+                    tempo=("tempo_td","sum"))
+        )
+        rs["ritmo_medio"] = rs.apply(lambda r: pace_str(r["tempo"], r["distancia_km"]), axis=1)
+        rs["tempo"] = rs["tempo"].apply(timedelta_to_hms)
+        rs.to_excel(writer, sheet_name="resumo_semana", index=False)
     return out.getvalue()
 
-# ---------------- Estado ----------------
+# =========================
+# Estado
+# =========================
 if "df" not in st.session_state:
     st.session_state.df = pd.DataFrame(columns=COLS)
-if "chat_msgs" not in st.session_state:
-    st.session_state.chat_msgs = []
 if "resumo_mode" not in st.session_state:
     st.session_state.resumo_mode = None
+if "chat_msgs" not in st.session_state:
+    st.session_state.chat_msgs = []
 
-# ---------------- Sidebar (menu à esquerda) ----------------
-st.sidebar.title("🏁 Menu")
+# =========================
+# Sidebar (Menu)
+# =========================
+st.sidebar.title("🏃 Controle de Corridas")
 menu = st.sidebar.radio(
     "Navegação",
     options=[
@@ -120,7 +140,6 @@ menu = st.sidebar.radio(
     index=0,
 )
 
-# Carregamento/Download no topo do sidebar
 st.sidebar.markdown("---")
 st.sidebar.header("📂 Planilha oficial")
 if os.path.exists(FILE_PATH):
@@ -147,20 +166,21 @@ if not st.session_state.df.empty:
         use_container_width=True,
     )
 
-# ---------------- Views ----------------
 df = st.session_state.df
 
+# =========================
+# Views
+# =========================
 if menu.startswith("➕"):
-    st.header("➕ Adicionar treino")
-    st.markdown("### 🏃‍♂️ Registre um novo treino")
+    st.header("🏃‍♂️ Adicionar treino")
     with st.form("add", clear_on_submit=True):
         c1,c2 = st.columns(2)
         data = c1.date_input("Data")
         dist = c2.number_input("Distância (km)", min_value=0.0, step=0.01, format="%.2f")
         t1,t2,t3 = st.columns(3)
-        hh = t1.number_input("Horas", min_value=0, step=1, value=0)
+        hh = t1.number_input("Horas",   min_value=0, max_value=23, step=1, value=0)
         mm = t2.number_input("Minutos", min_value=0, max_value=59, step=1, value=0)
-        ss = t3.number_input("Segundos", min_value=0, max_value=59, step=1, value=0)
+        ss = t3.number_input("Segundos",min_value=0, max_value=59, step=1, value=0)
         ok = st.form_submit_button("➕ Adicionar")
         if ok:
             tempo_td = pd.to_timedelta(f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d}")
@@ -170,7 +190,7 @@ if menu.startswith("➕"):
                 "Semana": semana_iso_label(pd.to_datetime(data)),
                 "Dia da Semana": dia_semana_nome(pd.to_datetime(data)),
                 "Distância (km)": dist,
-                "Tempo": f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d}",
+                "Tempo": timedelta_to_hms(tempo_td),
                 "Pace (min/km)": pace_str(tempo_td, dist),
             }
             st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([new])], ignore_index=True)
@@ -179,7 +199,6 @@ if menu.startswith("➕"):
 
 elif menu.startswith("✏️"):
     st.header("✏️ Editar treino")
-    st.markdown("### 🧰 Ajuste um treino existente")
     if df.empty:
         st.info("Carregue a planilha na barra lateral.")
     else:
@@ -195,21 +214,20 @@ elif menu.startswith("✏️"):
         t1,t2,t3 = st.columns(3)
         td = to_timedelta(row["Tempo"])
         hh0 = int(td.total_seconds()//3600); mm0 = int((td.total_seconds()%3600)//60); ss0 = int(td.total_seconds()%60)
-        hh = t1.number_input("Horas", min_value=0, step=1, value=hh0)
+        hh = t1.number_input("Horas",   min_value=0, max_value=23, step=1, value=hh0)
         mm = t2.number_input("Minutos", min_value=0, max_value=59, step=1, value=mm0)
-        ss = t3.number_input("Segundos", min_value=0, max_value=59, step=1, value=ss0)
+        ss = t3.number_input("Segundos",min_value=0, max_value=59, step=1, value=ss0)
 
         col1,col2 = st.columns(2)
         if col1.button("💾 Guardar alterações", use_container_width=True):
-            tempo = f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d}"
-            st.session_state.df.at[idx,"Data"] = pd.to_datetime(data)
-            st.session_state.df.at[idx,"Mês/Ano"] = mes_ano_label(pd.to_datetime(data))
-            st.session_state.df.at[idx,"Semana"] = semana_iso_label(pd.to_datetime(data))
-            st.session_state.df.at[idx,"Dia da Semana"] = dia_semana_nome(pd.to_datetime(data))
-            st.session_state.df.at[idx,"Distância (km)"] = dist
-            st.session_state.df.at[idx,"Tempo"] = tempo
-            st.session_state.df.at[idx,"Pace (min/km)"] = pace_str(to_timedelta(tempo), dist)
-            st.session_state.df = normalize_and_fill(st.session_state.df)
+            tempo = pd.to_timedelta(f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d}")
+            st.session_state.df.at[idx,"Data"]            = pd.to_datetime(data)
+            st.session_state.df.at[idx,"Mês/Ano"]         = mes_ano_label(pd.to_datetime(data))
+            st.session_state.df.at[idx,"Semana"]          = semana_iso_label(pd.to_datetime(data))
+            st.session_state.df.at[idx,"Dia da Semana"]   = dia_semana_nome(pd.to_datetime(data))
+            st.session_state.df.at[idx,"Distância (km)"]  = dist
+            st.session_state.df.at[idx,"Tempo"]           = timedelta_to_hms(tempo)
+            st.session_state.df.at[idx,"Pace (min/km)"]   = pace_str(tempo, dist)
             st.success("Registo atualizado. ✅")
         if col2.button("🗑️ Apagar treino", use_container_width=True):
             st.session_state.df = df.drop(index=idx).reset_index(drop=True)
@@ -217,94 +235,101 @@ elif menu.startswith("✏️"):
 
 elif menu.startswith("📋"):
     st.header("📋 Listagem completa")
-    st.markdown("### 🗂️ Todos os treinos")
     if df.empty:
         st.info("Carregue a planilha.")
     else:
         st.dataframe(df.sort_values("Data", ascending=False), use_container_width=True)
 
-else:  # Resumos
+else:  # 📊 Resumos
     st.header("📊 Resumos")
-    st.markdown("### 💬 Escolha o tipo de resumo via chat")
+    st.caption("Escolha no chat: *mês/ano, **semana* ou *total*. Ou use os botões rápidos.")
 
-    # Chat system message
     if not st.session_state.chat_msgs:
         st.session_state.chat_msgs = [
-            {"role": "assistant", "content": "Olá! Que resumo você quer ver? Digite: 'mes', 'semana' ou 'total'."}
+            {"role":"assistant","content":"Oi! Que resumo você quer ver? Diga *mês/ano, **semana* ou *total*."}
         ]
 
-    # render chat history
     for m in st.session_state.chat_msgs:
         with st.chat_message(m["role"]):
             st.write(m["content"])
 
-    # input
-    user_text = st.chat_input("Escreva: mes | semana | total")
+    colb1, colb2, colb3 = st.columns(3)
+    if colb1.button("📅 Mês/ano", use_container_width=True):
+        st.session_state.resumo_mode = "mes"
+        st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Resumo por mês/ano* 📅"})
+    if colb2.button("🗓️ Semana", use_container_width=True):
+        st.session_state.resumo_mode = "semana"
+        st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Resumo por semana* 🗓️"})
+    if colb3.button("🧮 Total Geral", use_container_width=True):
+        st.session_state.resumo_mode = "total"
+        st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Total geral* 🧮"})
+
+    user_text = st.chat_input("Escreva: mês/ano | semana | total")
     if user_text:
-        st.session_state.chat_msgs.append({"role": "user", "content": user_text})
-        choice = user_text.strip().lower()
-        if "mes" in choice or "mês" in choice:
+        st.session_state.chat_msgs.append({"role":"user","content":user_text})
+        low = user_text.strip().lower()
+        if "m" in low:   # aceita 'mes', 'mês', 'm'
             st.session_state.resumo_mode = "mes"
-            st.session_state.chat_msgs.append({"role": "assistant", "content": "Mostrando **Resumo por mês/ano** 📅"})
-        elif "sem" in choice:  # semana
+            st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Resumo por mês/ano* 📅"})
+        elif "sem" in low:
             st.session_state.resumo_mode = "semana"
-            st.session_state.chat_msgs.append({"role": "assistant", "content": "Mostrando **Resumo por semana** 🗓️"})
-        elif "tot" in choice:
+            st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Resumo por semana* 🗓️"})
+        elif "tot" in low:
             st.session_state.resumo_mode = "total"
-            st.session_state.chat_msgs.append({"role": "assistant", "content": "Mostrando **Total geral** 🧮"})
+            st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Total geral* 🧮"})
         else:
-            st.session_state.chat_msgs.append({"role": "assistant", "content": "Não entendi. Escreva: 'mes', 'semana' ou 'total'."})
+            st.session_state.chat_msgs.append({"role":"assistant","content":"Não entendi. Escreva: *mês/ano, **semana* ou *total*."})
 
     st.markdown("---")
 
     if df.empty:
         st.info("Carregue a planilha.")
     else:
-        # Build aux once
         aux = df.copy()
         aux["tempo_td"] = aux["Tempo"].apply(to_timedelta)
-        aux["mes_key"] = aux["Data"].dt.to_period("M").astype(str)
-        aux["semana_key"] = aux["Data"].dt.year.astype(str) + "-W" + aux["Data"].dt.isocalendar().week.astype(str).str.zfill(2)
 
         mode = st.session_state.resumo_mode
 
         if mode == "mes":
             g = (
-                aux.groupby("mes_key", as_index=False)
-                   .agg(dist_km=("Distância (km)", "sum"), tempo=("tempo_td", "sum"))
-                   .sort_values("mes_key")
+                aux.groupby("Mês/Ano", as_index=False)
+                   .agg(Treinos=("Data","count"),
+                        **{"Distância (km)": ("Distância (km)","sum")},
+                        Tempo=("tempo_td","sum"))
+                   .sort_values("Mês/Ano")
             )
             if not g.empty:
-                g["tempo"] = g["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
-                g_disp = g.rename(columns={"mes_key":"Mês (AAAA-MM)","dist_km":"Distância (km)","tempo":"Tempo"})
-                st.dataframe(g_disp, use_container_width=True)
-                chart_df = g[["mes_key", "dist_km"]].set_index("mes_key")
-                st.bar_chart(chart_df)
+                g["Ritmo médio"] = g.apply(lambda r: pace_str(r["Tempo"], r["Distância (km)"]), axis=1)
+                g["Tempo"] = g["Tempo"].apply(timedelta_to_hms)
+                st.dataframe(g, use_container_width=True)
             else:
-                st.info("Sem dados para agrupar por mês.")
+                st.info("Sem dados para agrupar por mês/ano.")
+
         elif mode == "semana":
             g = (
-                aux.groupby("semana_key", as_index=False)
-                   .agg(dist_km=("Distância (km)", "sum"), tempo=("tempo_td", "sum"))
-                   .sort_values("semana_key")
+                aux.groupby("Semana", as_index=False)
+                   .agg(Treinos=("Data","count"),
+                        **{"Distância (km)": ("Distância (km)","sum")},
+                        Tempo=("tempo_td","sum"))
+                   .sort_values("Semana")
             )
             if not g.empty:
-                g["tempo"] = g["tempo"].astype("timedelta64[s]").astype(int).apply(lambda x: f"{x//3600:02d}:{(x%3600)//60:02d}:{x%60:02d}")
-                g_disp = g.rename(columns={"semana_key":"Semana","dist_km":"Distância (km)","tempo":"Tempo"})
-                st.dataframe(g_disp, use_container_width=True)
-                chart_df = g[["semana_key", "dist_km"]].set_index("semana_key")
-                st.bar_chart(chart_df)
+                g["Ritmo médio"] = g.apply(lambda r: pace_str(r["Tempo"], r["Distância (km)"]), axis=1)
+                g["Tempo"] = g["Tempo"].apply(timedelta_to_hms)
+                st.dataframe(g, use_container_width=True)
             else:
                 st.info("Sem dados para agrupar por semana.")
+
         elif mode == "total":
             total_km = aux["Distância (km)"].sum()
-            total_t = aux["tempo_td"].sum()
+            total_t  = aux["tempo_td"].sum()
             c1,c2,c3 = st.columns(3)
             c1.metric("Total (km)", f"{total_km:.2f}")
-            c2.metric("Tempo total", str(total_t))
-            ritmo_sec = int(total_t.total_seconds()/total_km) if total_km>0 else 0
-            c3.metric("Ritmo médio", f"{ritmo_sec//60:02d}:{ritmo_sec%60:02d}" if total_km>0 else "00:00")
+            c2.metric("Tempo total", timedelta_to_hms(total_t))
+            ritmo = pace_str(total_t, total_km) if total_km>0 else "00:00"
+            c3.metric("Ritmo médio", ritmo)
             st.dataframe(df.sort_values("Data"), use_container_width=True)
+
         else:
-            st.info("Use a caixa de chat acima e escreva: mes | semana | total")
+            st.info("Use o chat acima ou os botões rápidos: *Mês/ano, **Semana* ou *Total Geral*.")
 
