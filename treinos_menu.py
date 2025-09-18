@@ -260,19 +260,26 @@ else:  # 📊 Resumos
         aux["tempo_td"] = aux["Tempo"].apply(to_timedelta)
 
         if tipo == "Mês/ano":
-            g = (
-                aux.groupby("Mês/Ano", as_index=False)
-                   .agg(Treinos=("Data","count"),
-                        **{"Distância (km)": ("Distância (km)","sum")},
-                        Tempo=("tempo_td","sum"))
-                   .sort_values("Mês/Ano")
-            )
-            if not g.empty:
-                g["Ritmo médio"] = g.apply(lambda r: pace_str(r["Tempo"], r["Distância (km)"]), axis=1)
-                g["Tempo"] = g["Tempo"].apply(timedelta_to_hms)
-                st.dataframe(g, use_container_width=True)
-            else:
-                st.info("Sem dados para agrupar por mês/ano.")
+    g = (
+        aux.groupby("Mês/Ano", as_index=False)
+           .agg(Treinos=("Data","count"),
+                **{"Distância (km)": ("Distância (km)","sum")},
+                Tempo=("tempo_td","sum"))
+    )
+    if not g.empty:
+        # criar chave auxiliar para ordenação
+        g["ordem"] = pd.to_datetime(
+            g["Mês/Ano"].str.split().str[1] + "-" +  # ano
+            g["Mês/Ano"].str.split().str[0].map(lambda m: str(MESES_PT.index(m.lower())+1).zfill(2)),
+            errors="coerce"
+        )
+        g = g.sort_values("ordem").drop(columns=["ordem"])
+
+        g["Ritmo médio"] = g.apply(lambda r: pace_str(r["Tempo"], r["Distância (km)"]), axis=1)
+        g["Tempo"] = g["Tempo"].apply(timedelta_to_hms)
+        st.dataframe(g, use_container_width=True)
+    else:
+        st.info("Sem dados para agrupar por mês/ano.")
 
         elif tipo == "Semana":
             g = (
