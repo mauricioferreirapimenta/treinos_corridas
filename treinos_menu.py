@@ -269,12 +269,13 @@ else:  # 📊 Resumos
         aux["tempo_td"] = aux["Tempo"].apply(to_timedelta)
 
         if tipo == "Mês/ano":
-    g = (
-        aux.groupby("Mês/Ano", as_index=False)
-           .agg(Treinos=("Data","count"),
-                **{"Distância (km)": ("Distância (km)","sum")},
-                Tempo=("tempo_td","sum"))
-    )
+            g = (
+                aux.groupby("Mês/Ano", as_index=False)
+                    .agg(Treinos=("Data","count"),
+                        **{"Distância (km)": ("Distância (km)","sum")},
+                        Tempo=("tempo_td","sum"))
+                    .sort_values(by=["Data"]) 
+        )
     if not g.empty:
         # criar chave auxiliar para ordenação
         g["ordem"] = pd.to_datetime(
