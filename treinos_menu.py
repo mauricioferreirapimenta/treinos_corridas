@@ -202,35 +202,44 @@ elif menu.startswith("✏️"):
         st.info("Carregue a planilha na barra lateral.")
     else:
         dfv = df.copy()
-        dfv["idx"] = dfv.index
-        dfv["rotulo"] = dfv["Data"].dt.strftime("%Y-%m-%d") + " | " + dfv["Distância (km)"].fillna(0).map(lambda x: f"{x:.2f} km")
-        idx = st.selectbox("Selecione", options=dfv["idx"], format_func=lambda i: dfv.loc[i,"rotulo"])
-        row = df.loc[idx]
+dfv["idx"] = dfv.index
+dfv["rotulo"] = dfv["Data"].dt.strftime("%Y-%m-%d") + " | " + dfv["Distância (km)"].fillna(0).map(lambda x: f"{x:.2f} km")
 
-        c1,c2 = st.columns(2)
-        data = c1.date_input("Data", value=row["Data"].date() if pd.notna(row["Data"]) else pd.Timestamp.today().date())
-        dist = c2.number_input("Distância (km)", min_value=0.0, step=0.01, value=float(row["Distância (km)"] or 0))
-        t1,t2,t3 = st.columns(3)
-        td = to_timedelta(row["Tempo"])
-        hh0 = int(td.total_seconds()//3600); mm0 = int((td.total_seconds()%3600)//60); ss0 = int(td.total_seconds()%60)
-        hh = t1.number_input("Horas",   min_value=0, max_value=23, step=1, value=hh0)
-        mm = t2.number_input("Minutos", min_value=0, max_value=59, step=1, value=mm0)
-        ss = t3.number_input("Segundos",min_value=0, max_value=59, step=1, value=ss0)
+# opções com vazio no início
+opcoes = [""] + dfv["idx"].tolist()
 
-        col1,col2 = st.columns(2)
-        if col1.button("💾 Guardar alterações", use_container_width=True):
-            tempo = pd.to_timedelta(f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d}")
-            st.session_state.df.at[idx,"Data"]            = pd.to_datetime(data)
-            st.session_state.df.at[idx,"Mês/Ano"]         = mes_ano_label(pd.to_datetime(data))
-            st.session_state.df.at[idx,"Semana"]          = semana_iso_label(pd.to_datetime(data))
-            st.session_state.df.at[idx,"Dia da Semana"]   = dia_semana_nome(pd.to_datetime(data))
-            st.session_state.df.at[idx,"Distância (km)"]  = dist
-            st.session_state.df.at[idx,"Tempo"]           = timedelta_to_hms(tempo)
-            st.session_state.df.at[idx,"Pace (min/km)"]   = pace_str(tempo, dist)
-            st.success("Registo atualizado. ✅")
-        if col2.button("🗑️ Apagar treino", use_container_width=True):
-            st.session_state.df = df.drop(index=idx).reset_index(drop=True)
-            st.success("Registo apagado. 🗑️")
+# selectbox começa em branco
+idx = st.selectbox("Selecione um treino", options=opcoes, format_func=lambda i: dfv.loc[i,"rotulo"] if i != "" else "")
+
+if idx != "":
+    row = df.loc[idx]
+
+    c1,c2 = st.columns(2)
+    data = c1.date_input("Data", value=row["Data"].date() if pd.notna(row["Data"]) else pd.Timestamp.today().date())
+    dist = c2.number_input("Distância (km)", min_value=0.0, step=0.01, value=float(row["Distância (km)"] or 0))
+
+    t1,t2,t3 = st.columns(3)
+    td = to_timedelta(row["Tempo"])
+    hh0 = int(td.total_seconds()//3600); mm0 = int((td.total_seconds()%3600)//60); ss0 = int(td.total_seconds()%60)
+    hh = t1.number_input("Horas",   min_value=0, max_value=23, step=1, value=hh0)
+    mm = t2.number_input("Minutos", min_value=0, max_value=59, step=1, value=mm0)
+    ss = t3.number_input("Segundos",min_value=0, max_value=59, step=1, value=ss0)
+
+    col1,col2 = st.columns(2)
+    if col1.button("💾 Guardar alterações", use_container_width=True):
+        tempo = pd.to_timedelta(f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d}")
+        st.session_state.df.at[idx,"Data"]            = pd.to_datetime(data)
+        st.session_state.df.at[idx,"Mês/Ano"]         = mes_ano_label(pd.to_datetime(data))
+        st.session_state.df.at[idx,"Semana"]          = semana_iso_label(pd.to_datetime(data))
+        st.session_state.df.at[idx,"Dia da Semana"]   = dia_semana_nome(pd.to_datetime(data))
+        st.session_state.df.at[idx,"Distância (km)"]  = dist
+        st.session_state.df.at[idx,"Tempo"]           = timedelta_to_hms(tempo)
+        st.session_state.df.at[idx,"Pace (min/km)"]   = pace_str(tempo, dist)
+        st.success("Registo atualizado. ✅")
+
+    if col2.button("🗑️ Apagar treino", use_container_width=True):
+        st.session_state.df = df.drop(index=idx).reset_index(drop=True)
+        st.success("Registo apagado. 🗑️")
 
 elif menu.startswith("📋"):
     st.header("📋 Listagem completa")
