@@ -43,7 +43,7 @@ def to_timedelta(val):
             return pd.to_timedelta(0, unit="s")
 
 def timedelta_to_hms(td):
-    # sempre em HH:MM:SS (soma dias em horas)
+    # hh:mm:ss (converte dias em horas)
     secs = int(td.total_seconds())
     return f"{secs//3600:02d}:{(secs%3600)//60:02d}:{secs%60:02d}"
 
@@ -241,9 +241,9 @@ elif menu.startswith("📋"):
 
 else:  # 📊 Resumos
     st.header("📊 Resumos")
-    st.caption("Selecione abaixo o tipo de resumo que deseja visualizar.")
+    st.caption("Selecione no menu abaixo o tipo de resumo que deseja visualizar.")
 
-    # 🔽 seletor no topo (como no seu exemplo)
+    # 🔽 seletor (sem chat)
     tipo = st.selectbox(
         "Escolha o tipo de resumo",
         ["Mês/ano", "Semana", "Total geral"],
@@ -291,7 +291,7 @@ else:  # 📊 Resumos
             total_t  = aux["tempo_td"].sum()
             c1,c2,c3 = st.columns(3)
             c1.metric("Total (km)", f"{total_km:.2f}")
-            c2.metric("Tempo total", timedelta_to_hms(total_t))  # <-- SEM 'days', sempre HH:MM:SS
+            c2.metric("Tempo total", timedelta_to_hms(total_t))  # hh:mm:ss
             ritmo = pace_str(total_t, total_km) if total_km>0 else "00:00"
             c3.metric("Ritmo médio", ritmo)
             st.dataframe(df.sort_values("Data"), use_container_width=True)
