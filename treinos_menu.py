@@ -43,6 +43,7 @@ def to_timedelta(val):
             return pd.to_timedelta(0, unit="s")
 
 def timedelta_to_hms(td):
+    # sempre em HH:MM:SS (soma dias em horas)
     secs = int(td.total_seconds())
     return f"{secs//3600:02d}:{(secs%3600)//60:02d}:{secs%60:02d}"
 
@@ -98,6 +99,7 @@ def save_excel_bytes(df):
                .agg(treinos=("Data","count"),
                     distancia_km=("Distância (km)","sum"),
                     tempo=("tempo_td","sum"))
+               .sort_values("Mês/Ano")
         )
         rm["ritmo_medio"] = rm.apply(lambda r: pace_str(r["tempo"], r["distancia_km"]), axis=1)
         rm["tempo"] = rm["tempo"].apply(timedelta_to_hms)
@@ -109,6 +111,7 @@ def save_excel_bytes(df):
                .agg(treinos=("Data","count"),
                     distancia_km=("Distância (km)","sum"),
                     tempo=("tempo_td","sum"))
+               .sort_values("Semana")
         )
         rs["ritmo_medio"] = rs.apply(lambda r: pace_str(r["tempo"], r["distancia_km"]), axis=1)
         rs["tempo"] = rs["tempo"].apply(timedelta_to_hms)
@@ -120,10 +123,6 @@ def save_excel_bytes(df):
 # =========================
 if "df" not in st.session_state:
     st.session_state.df = pd.DataFrame(columns=COLS)
-if "resumo_mode" not in st.session_state:
-    st.session_state.resumo_mode = None
-if "chat_msgs" not in st.session_state:
-    st.session_state.chat_msgs = []
 
 # =========================
 # Sidebar (Menu)
@@ -242,45 +241,14 @@ elif menu.startswith("📋"):
 
 else:  # 📊 Resumos
     st.header("📊 Resumos")
-    st.caption("Escolha no chat: *mês/ano, **semana* ou *total*. Ou use os botões rápidos.")
+    st.caption("Selecione abaixo o tipo de resumo que deseja visualizar.")
 
-    if not st.session_state.chat_msgs:
-        st.session_state.chat_msgs = [
-            {"role":"assistant","content":"Oi! Que resumo você quer ver? Diga *mês/ano, **semana* ou *total*."}
-        ]
-
-    for m in st.session_state.chat_msgs:
-        with st.chat_message(m["role"]):
-            st.write(m["content"])
-
-    colb1, colb2, colb3 = st.columns(3)
-    if colb1.button("📅 Mês/ano", use_container_width=True):
-        st.session_state.resumo_mode = "mes"
-        st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Resumo por mês/ano* 📅"})
-    if colb2.button("🗓️ Semana", use_container_width=True):
-        st.session_state.resumo_mode = "semana"
-        st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Resumo por semana* 🗓️"})
-    if colb3.button("🧮 Total Geral", use_container_width=True):
-        st.session_state.resumo_mode = "total"
-        st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Total geral* 🧮"})
-
-    user_text = st.chat_input("Escreva: mês/ano | semana | total")
-    if user_text:
-        st.session_state.chat_msgs.append({"role":"user","content":user_text})
-        low = user_text.strip().lower()
-        if "m" in low:   # aceita 'mes', 'mês', 'm'
-            st.session_state.resumo_mode = "mes"
-            st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Resumo por mês/ano* 📅"})
-        elif "sem" in low:
-            st.session_state.resumo_mode = "semana"
-            st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Resumo por semana* 🗓️"})
-        elif "tot" in low:
-            st.session_state.resumo_mode = "total"
-            st.session_state.chat_msgs.append({"role":"assistant","content":"Mostrando *Total geral* 🧮"})
-        else:
-            st.session_state.chat_msgs.append({"role":"assistant","content":"Não entendi. Escreva: *mês/ano, **semana* ou *total*."})
-
-    st.markdown("---")
+    # 🔽 seletor no topo (como no seu exemplo)
+    tipo = st.selectbox(
+        "Escolha o tipo de resumo",
+        ["Mês/ano", "Semana", "Total geral"],
+        index=0,
+    )
 
     if df.empty:
         st.info("Carregue a planilha.")
@@ -288,9 +256,7 @@ else:  # 📊 Resumos
         aux = df.copy()
         aux["tempo_td"] = aux["Tempo"].apply(to_timedelta)
 
-        mode = st.session_state.resumo_mode
-
-        if mode == "mes":
+        if tipo == "Mês/ano":
             g = (
                 aux.groupby("Mês/Ano", as_index=False)
                    .agg(Treinos=("Data","count"),
@@ -305,7 +271,7 @@ else:  # 📊 Resumos
             else:
                 st.info("Sem dados para agrupar por mês/ano.")
 
-        elif mode == "semana":
+        elif tipo == "Semana":
             g = (
                 aux.groupby("Semana", as_index=False)
                    .agg(Treinos=("Data","count"),
@@ -320,16 +286,12 @@ else:  # 📊 Resumos
             else:
                 st.info("Sem dados para agrupar por semana.")
 
-        elif mode == "total":
+        else:  # Total geral
             total_km = aux["Distância (km)"].sum()
             total_t  = aux["tempo_td"].sum()
             c1,c2,c3 = st.columns(3)
             c1.metric("Total (km)", f"{total_km:.2f}")
-            c2.metric("Tempo total", timedelta_to_hms(total_t))
+            c2.metric("Tempo total", timedelta_to_hms(total_t))  # <-- SEM 'days', sempre HH:MM:SS
             ritmo = pace_str(total_t, total_km) if total_km>0 else "00:00"
             c3.metric("Ritmo médio", ritmo)
             st.dataframe(df.sort_values("Data"), use_container_width=True)
-
-        else:
-            st.info("Use o chat acima ou os botões rápidos: *Mês/ano, **Semana* ou *Total Geral*.")
-
